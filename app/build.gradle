@@ -26,7 +26,7 @@ android {
     }
 
     buildFeatures {
-        buildConfig = true // Disable BuildConfig if not used, or handle manually if used
+        buildConfig = false // Disable BuildConfig if not used, or handle manually if used
         viewBinding true
     }
 

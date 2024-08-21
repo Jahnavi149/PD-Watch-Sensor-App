@@ -45,7 +45,7 @@ class ForegroundService : Service(), SensorEventListener {
     private var angularSpeedZValues: MutableList<Float> = arrayListOf()
     private var heartRateValues: MutableList<Float> = arrayListOf()
 
-    private val DATA_COLLECTION_INTERVAL = 10 // 1 second
+    private val DATA_COLLECTION_INTERVAL = 500 // 0.5 second
     private val ClOUD_SYNC_INTERVAL = 10000 // 10 second,
     private val headers: List<String> = listOf("Timestamp", "Acc X", "Acc Y", "Acc Z", "Angular X",
         "Angular Y", "Angular Z", "Heart Rate", "Medication (0/1)")
@@ -185,10 +185,15 @@ class ForegroundService : Service(), SensorEventListener {
 
     private val cloudSyncRunnable = object : Runnable {
         override fun run() {
-            val data: List<List<Float>> = listOf(accXValues, accYValues, accZValues,
-                angularSpeedXValues, angularSpeedYValues, angularSpeedZValues, heartRateValues)
+            val data: List<List<Float>> = listOf(
+                accXValues, accYValues, accZValues,
+                angularSpeedXValues, angularSpeedYValues, angularSpeedZValues, heartRateValues
+            )
             val currentSync = System.currentTimeMillis()
-            if (saveDataToCSV(headers, data, "data-$lastSynced-$currentSync")) {
+            val fileName = "data-$lastSynced-$currentSync.csv"
+
+            if (saveDataToCSV(headers, data, fileName)) {
+                // Clear the lists for the next round of data collection
                 accXValues.clear()
                 accYValues.clear()
                 accZValues.clear()
@@ -196,8 +201,16 @@ class ForegroundService : Service(), SensorEventListener {
                 angularSpeedYValues.clear()
                 angularSpeedZValues.clear()
                 heartRateValues.clear()
+
+                // Upload the file to the server
+                if (uploadFileToServer(fileName)) {
+                    // Delete the file after successful upload
+                    deleteLocalFile(fileName)
+                }
+
                 lastSynced = currentSync
             }
+
             cloudSyncHandler.postDelayed(this, ClOUD_SYNC_INTERVAL.toLong())
         }
     }
@@ -223,6 +236,22 @@ class ForegroundService : Service(), SensorEventListener {
         angularSpeedZValues.add(angularSpeedZ)
         heartRateValues.add(heartRate)
         timestamps.add(currentTime)
+    }
+
+    private fun uploadFileToServer(fileName: String): Boolean {
+        // file upload logic
+        // Returns true if upload was successful, false otherwise
+        return false
+    }
+
+    private fun deleteLocalFile(fileName: String) {
+        val csvFile = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), fileName)
+        if (csvFile.exists()) {
+            csvFile.delete()
+            Log.v("File Delete", "File $fileName deleted successfully")
+        } else {
+            Log.v("File Delete", "File $fileName not found")
+        }
     }
 
 }

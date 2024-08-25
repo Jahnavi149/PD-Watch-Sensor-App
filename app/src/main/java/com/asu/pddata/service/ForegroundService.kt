@@ -26,7 +26,7 @@ class ForegroundService : Service(), SensorEventListener {
     private var mAccSensor: Sensor? = null
     private var mGyroSensor: Sensor? = null
     private var mHeartRateSensor: Sensor? = null
-    private var medicationTaken = 0
+    private val medicationDataList = mutableListOf<List<String>>()
 
     private var accXValue: Float = 0F
     private var accYValue: Float = 0F
@@ -46,7 +46,7 @@ class ForegroundService : Service(), SensorEventListener {
     private var heartRateValues: MutableList<Float> = arrayListOf()
 
     private val DATA_COLLECTION_INTERVAL = 500 // 0.5 second
-    private val ClOUD_SYNC_INTERVAL = 10000 // 10 second,
+    private val ClOUD_SYNC_INTERVAL = 10000 // 10 seconds
     private val headers: List<String> = listOf("Timestamp", "Acc X", "Acc Y", "Acc Z", "Angular X",
         "Angular Y", "Angular Z", "Heart Rate", "Medication (0/1)")
 
@@ -54,6 +54,7 @@ class ForegroundService : Service(), SensorEventListener {
     private val dataCollectionHandler = Handler()
     private val cloudSyncHandler = Handler()
     private var lastSynced = System.currentTimeMillis()
+    private var currentFileName: String = ""
 
     override fun onBind(p0: Intent?): IBinder? {
         return null
@@ -61,8 +62,9 @@ class ForegroundService : Service(), SensorEventListener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.getBooleanExtra("medication_taken", false) == true) {
-            medicationTaken = 1
-            Log.v("Collect", "Writing Medication Data to CSV")
+            val medicationData = collectCurrentData() // Collect the current data
+            medicationDataList.add(medicationData) // Add it to the list of medication data
+            Log.v("Collect", "Medication taken; data added to list")
         }
 
         if (!isServiceRunning) {
@@ -105,7 +107,6 @@ class ForegroundService : Service(), SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent) {
-        // If sensor is unreliable, then just return
         if (event.accuracy == SensorManager.SENSOR_STATUS_UNRELIABLE) {
             return
         }
@@ -127,37 +128,105 @@ class ForegroundService : Service(), SensorEventListener {
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        //do something
+        // Do something if needed
     }
 
+    private fun collectCurrentData(): List<String> {
+        val currentTime = dateFormat.format(Date())
+        return listOf(
+            currentTime,
+            String.format(Locale.US, "%.2f", accXValue),
+            String.format(Locale.US, "%.2f", accYValue),
+            String.format(Locale.US, "%.2f", accZValue),
+            String.format(Locale.US, "%.2f", angularSpeedX),
+            String.format(Locale.US, "%.2f", angularSpeedY),
+            String.format(Locale.US, "%.2f", angularSpeedZ),
+            String.format(Locale.US, "%.2f", heartRate),
+            "1" // Medication taken
+        )
+    }
 
-    private fun saveDataToCSV(headers: List<String>, data: List<List<Float>>, fileName: String): Boolean {
+    private fun collectAndSaveData() {
+        val currentTime = dateFormat.format(Date())
+        timestamps.add(currentTime)
+        accXValues.add(accXValue)
+        accYValues.add(accYValue)
+        accZValues.add(accZValue)
+        angularSpeedXValues.add(angularSpeedX)
+        angularSpeedYValues.add(angularSpeedY)
+        angularSpeedZValues.add(angularSpeedZ)
+        heartRateValues.add(heartRate)
+
+        Log.v("Collect", "Collecting data at $currentTime")
+
+        // Save data at the end of the sync interval
+        if (System.currentTimeMillis() - lastSynced >= ClOUD_SYNC_INTERVAL) {
+            val data: List<List<Float>> = listOf(
+                accXValues, accYValues, accZValues,
+                angularSpeedXValues, angularSpeedYValues, angularSpeedZValues, heartRateValues
+            )
+
+            val rows = mutableListOf<List<String>>()
+
+            // Add all normal data rows first
+            for (i in 0 until data[0].size) {
+                val row = listOf(
+                    timestamps[i],
+                    String.format(Locale.US, "%.2f", accXValues[i]),
+                    String.format(Locale.US, "%.2f", accYValues[i]),
+                    String.format(Locale.US, "%.2f", accZValues[i]),
+                    String.format(Locale.US, "%.2f", angularSpeedXValues[i]),
+                    String.format(Locale.US, "%.2f", angularSpeedYValues[i]),
+                    String.format(Locale.US, "%.2f", angularSpeedZValues[i]),
+                    String.format(Locale.US, "%.2f", heartRateValues[i]),
+                    "0" // Medication flag is 0 for normal data
+                )
+                rows.add(row)
+            }
+
+            // Add all medication data rows
+            rows.addAll(medicationDataList)
+            medicationDataList.clear() // Clear the list after saving
+
+            // Sort rows by timestamp
+            rows.sortBy { it[0] }
+
+            // Save the sorted rows to CSV
+            if (saveRowsToCSV(headers, rows, currentFileName)) {
+                // Clear the lists for the next round of data collection
+                accXValues.clear()
+                accYValues.clear()
+                accZValues.clear()
+                angularSpeedXValues.clear()
+                angularSpeedYValues.clear()
+                angularSpeedZValues.clear()
+                heartRateValues.clear()
+                timestamps.clear()
+
+                // Prepare for the next interval
+                lastSynced = System.currentTimeMillis()
+                currentFileName = getFileName()
+            }
+        }
+    }
+
+    private fun saveRowsToCSV(headers: List<String>, rows: List<List<String>>, fileName: String): Boolean {
         if (isExternalStorageWritable()) {
             val csvFile = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), fileName)
 
             try {
                 Log.v("Cloud", "Saving file to $fileName")
-                val fileWriter = FileWriter(csvFile)
+                val fileWriter = FileWriter(csvFile, true) // Append mode
 
-                fileWriter.append(headers.joinToString(","))
-                fileWriter.append("\n")
+                // Write headers only if file is empty
+                if (csvFile.length() == 0L) {
+                    fileWriter.append(headers.joinToString(","))
+                    fileWriter.append("\n")
+                }
 
-                if (data.isNotEmpty()) {
-                    for (i in 0 until data[0].size) {
-                        val row: MutableList<String> = mutableListOf()
-                        row.add(timestamps[i])
-                        for (sensor in data) {
-                            row.add(String.format(Locale.US, "%.2f", sensor[i]))
-                        }
-                        row.add(medicationTaken.toString())
-                        if (medicationTaken == 1) {
-                            medicationTaken = 0
-                        }
-                        fileWriter.append(row.joinToString(","))
-                        fileWriter.append("\n")
-                    }
-                } else {
-                    Log.i("data", "List is empty")
+                for (row in rows) {
+                    fileWriter.append(row.joinToString(","))
+                    fileWriter.append("\n")
                 }
 
                 fileWriter.close()
@@ -175,83 +244,23 @@ class ForegroundService : Service(), SensorEventListener {
         return Environment.MEDIA_MOUNTED == state
     }
 
+    private fun getFileName(): String {
+        return "data-${System.currentTimeMillis()}.csv"
+    }
+
     private val dataCollectionRunnable = object : Runnable {
         override fun run() {
-            collectData()
-
+            collectAndSaveData()
             dataCollectionHandler.postDelayed(this, DATA_COLLECTION_INTERVAL.toLong())
         }
     }
 
-    private val cloudSyncRunnable = object : Runnable {
-        override fun run() {
-            val data: List<List<Float>> = listOf(
-                accXValues, accYValues, accZValues,
-                angularSpeedXValues, angularSpeedYValues, angularSpeedZValues, heartRateValues
-            )
-            val currentSync = System.currentTimeMillis()
-            val fileName = "data-$lastSynced-$currentSync.csv"
-
-            if (saveDataToCSV(headers, data, fileName)) {
-                // Clear the lists for the next round of data collection
-                accXValues.clear()
-                accYValues.clear()
-                accZValues.clear()
-                angularSpeedXValues.clear()
-                angularSpeedYValues.clear()
-                angularSpeedZValues.clear()
-                heartRateValues.clear()
-
-                // Upload the file to the server
-                if (uploadFileToServer(fileName)) {
-                    // Delete the file after successful upload
-                    deleteLocalFile(fileName)
-                }
-
-                lastSynced = currentSync
-            }
-
-            cloudSyncHandler.postDelayed(this, ClOUD_SYNC_INTERVAL.toLong())
-        }
-    }
-
     private fun startDataCollection() {
+        currentFileName = getFileName()
         dataCollectionHandler.post(dataCollectionRunnable)
-        cloudSyncHandler.post(cloudSyncRunnable)
     }
 
     private fun stopDataCollection() {
         dataCollectionHandler.removeCallbacks(dataCollectionRunnable)
-        cloudSyncHandler.removeCallbacks(cloudSyncRunnable)
     }
-
-    fun collectData() {
-        val currentTime = dateFormat.format(Date())
-        Log.v("Collect", "Collecting data at $currentTime")
-        accXValues.add(accXValue)
-        accYValues.add(accYValue)
-        accZValues.add(accZValue)
-        angularSpeedXValues.add(angularSpeedX)
-        angularSpeedYValues.add(angularSpeedY)
-        angularSpeedZValues.add(angularSpeedZ)
-        heartRateValues.add(heartRate)
-        timestamps.add(currentTime)
-    }
-
-    private fun uploadFileToServer(fileName: String): Boolean {
-        // file upload logic
-        // Returns true if upload was successful, false otherwise
-        return false
-    }
-
-    private fun deleteLocalFile(fileName: String) {
-        val csvFile = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), fileName)
-        if (csvFile.exists()) {
-            csvFile.delete()
-            Log.v("File Delete", "File $fileName deleted successfully")
-        } else {
-            Log.v("File Delete", "File $fileName not found")
-        }
-    }
-
 }
